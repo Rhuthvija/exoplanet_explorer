@@ -3,6 +3,8 @@ import { Canvas } from "@react-three/fiber";
 import { OrbitControls, Stars } from "@react-three/drei";
 import SystemView from "./SystemView";
 import GalaxyView from "./GalaxyView";
+import CompareView from "./CompareView";
+import Intro from "./Intro";
 import Dots from "./Dots";
 import Halo from "./Halo";
 import FlyTo from "./FlyTo";
@@ -20,12 +22,13 @@ const zoomBtn = {
   fontSize: 20,
   borderRadius: 10,
   border: "1px solid #26335f",
-  background: "#0b1020ee",
+  background: "rgba(11, 16, 32, 0.8)",
   color: "#e2e8f0",
   cursor: "pointer",
 };
 
 export default function App() {
+  const [showIntro, setShowIntro] = useState(true);
   const [planets, setPlanets] = useState([]);
   const [selected, setSelected] = useState(null);
   const [q, setQ] = useState("");
@@ -34,6 +37,7 @@ export default function App() {
   const [systemPlanet, setSystemPlanet] = useState(null);
   const [flyTarget, setFlyTarget] = useState(null);
   const [mode, setMode] = useState("sky"); // "sky" | "galaxy"
+  const [compare, setCompare] = useState(null); // null | { a: planetName | null }
   const controlsRef = useRef(null);
   const tipRef = useRef(null);
   const zoomApi = useRef(null);
@@ -117,8 +121,10 @@ export default function App() {
 
   return (
     <>
+      {showIntro && <Intro onDone={() => setShowIntro(false)} />}
+
       <div className="bar">
-        <strong>Exoplanet Explorer</strong>
+        <span className="brand">🪐 Exoplanet Explorer</span>
         <input
           type="text"
           placeholder="Search planet or star"
@@ -130,10 +136,17 @@ export default function App() {
             type="checkbox"
             checked={habitableOnly}
             onChange={(e) => setHabitableOnly(e.target.checked)}
-          />{" "}
+          />
           Habitable zone only
         </label>
-        <span>{status}</span>
+        <span className="count">{status}</span>
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => setCompare({ a: selected ? selected.pl_name : null })}
+        >
+          ⚖ Compare
+        </button>
       </div>
 
       <div className="legend">
@@ -239,6 +252,7 @@ export default function App() {
         <GalaxyView
           planets={planets}
           selected={selected}
+          texture={texture}
           onSelect={setSelected}
           onHover={handleHover}
         />
@@ -273,7 +287,12 @@ export default function App() {
           onPick={setSelected}
           onClose={() => setSelected(null)}
           onViewSystem={setSystemPlanet}
+          onCompare={(p) => setCompare({ a: p.pl_name })}
         />
+      )}
+
+      {compare && (
+        <CompareView api={API} initialA={compare.a} onClose={() => setCompare(null)} />
       )}
     </>
   );

@@ -5,9 +5,11 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
+from facts import build_facts
 from metrics import enrich
 
 load_dotenv()
@@ -40,27 +42,50 @@ def load_planets(raw):
 with open(DATA_FILE) as f:
     load_planets(json.load(f))
 
+# Any OpenAI-compatible provider works. Defaults to local Ollama.
 client = OpenAI(
-    base_url=os.getenv("LLM_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"),
-    api_key=os.getenv("LLM_API_KEY", "none"),
+    base_url=os.getenv("LLM_BASE_URL", "http://localhost:11434/v1"),
+    api_key=os.getenv("LLM_API_KEY", "ollama"),
 )
-MODEL = os.getenv("LLM_MODEL", "")
+MODEL = os.getenv("LLM_MODEL", "llama3.2")
 
-SYSTEM_PROMPT = """You are a friendly virtual astronomer. Explain exoplanets clearly to curious non-experts.
-Rules:
-- Use ONLY the planet data provided below for facts and numbers. Never invent values.
-- Every value in the data has its unit written next to it. Always repeat the unit when you state a number, and report temperatures exactly as given (Kelvin with the Celsius equivalent).
-- Never say a planet "is habitable". Say whether it is in the habitable zone and how Earth-like it is, quoting its ESI and equilibrium temperature with units.
-- Equilibrium temperature is the temperature a planet would have from its star's light alone, with no atmosphere or greenhouse effect. Describe it exactly that way.
-- Always quote at least two numbers from the data in your answer.
-- If a value is null/missing, say it is unknown.
-- ESI (Earth Similarity Index) and habitable-zone status are precomputed; explain them, don't recompute.
-- Equilibrium temperature is not surface temperature; mention this when discussing habitability.
-- Habitability here means Earth-likeness, not evidence of life. Be honest about uncertainty.
-- Keep answers concise.
-- Use only facts from the data. Do not speculate about atmosphere, greenhouse effects, or surface conditions.
-- Never call life likely or promising. Say the data cannot tell us whether life exists.
-- Equilibrium temperature is not surface temperature. Don’t describe the surface."""
+# ---------- the astronomer ----------
+
+BASE_RULES = """You are Astro, a friendly virtual astronomer inside a 3D exoplanet explorer. Your audience is curious non-experts.
+
+STRICT RULES
+1. Use ONLY the FACTS provided below. Never add numbers, names or details that are not in them.
+2. If something is not in the facts, say "NASA's data doesn't tell us that."
+3. Never say life is likely, promising or possible. Never speculate about atmosphere, oceans, surface, weather or aliens. The honest conclusion is that the data cannot show whether life exists.
+4. Equilibrium temperature is not surface temperature. ESI measures similarity to Earth in size, density and temperature; it is not a chance of life.
+5. Describe stars exactly as the facts do. Never call a cool red dwarf hot.
+6. Plain text only: no markdown, no asterisks, no bullet points, no headings.
+7. Be concise: at most 80 words unless the user asks for more."""
+
+MODE_PROMPTS = {
+    "life": (
+        "Task: answer 'Could life exist here?'. Write exactly three sentences. "
+        "Sentence 1: what the facts say about size, starlight and temperature compared with Earth. "
+        "Sentence 2: what the data does not tell us (for example atmosphere or water). "
+        "Sentence 3, word for word: So the data cannot tell us whether life exists here."
+    ),
+    "earth": (
+        "Task: compare with Earth in three short sentences covering size, starlight received and temperature. "
+        "Use the numbers from the facts."
+    ),
+    "special": (
+        "Task: in three sentences, say what is most distinctive or interesting about this world or system, "
+        "using only the facts."
+    ),
+    "insight": (
+        "Task: write 3 short sentences: what kind of world this is, what stands out, "
+        "and how Earth-like it is (explain the ESI and habitable-zone result)."
+    ),
+    "free": (
+        "Task: answer the user's question using only the facts. "
+        "If the question cannot be answered from the facts, say so plainly."
+    ),
+}
 
 
 def get_or_404(name: str):
@@ -68,51 +93,57 @@ def get_or_404(name: str):
     if not p:
         raise HTTPException(404, f"Planet not found: {name}")
     return p
-def describe(p):
-    k = p.get("pl_eqt")
-    temp = "unknown" if k is None else f"{round(k, 1)} K ({round(k - 273.15, 1)} °C)"
-    pc = p.get("sy_dist")
-    dist = "unknown" if pc is None else f"{round(pc, 2)} parsecs ({round(pc * 3.2616, 1)} light-years)"
 
-    def val(key, unit, nd=3):
-        v = p.get(key)
-        if v is None:
-            return "unknown"
-        return f"{round(v, nd) if isinstance(v, float) else v} {unit}".strip()
 
-    esi = p.get("esi")
-    esi_txt = "unknown" if esi is None else f"{esi} (computed from {p.get('esi_factors')} of 4 factors)"
-    return "\n".join([
-        f"Name: {p.get('pl_name')}",
-        f"Host star: {p.get('hostname')}",
-        f"Planet type: {p.get('type')}",
-        f"Discovered: {p.get('disc_year')} via {p.get('discoverymethod')}",
-        f"Distance from Earth: {dist}",
-        f"Radius: {val('pl_rade', 'Earth radii')}",
-        f"Mass: {val('pl_bmasse', 'Earth masses')}",
-        f"Orbital period: {val('pl_orbper', 'days')}",
-        f"Orbital distance from star: {val('pl_orbsmax', 'AU')}",
-        f"Equilibrium temperature: {temp}",
-        f"Starlight received: {val('pl_insol', 'x Earth')}",
-        f"Star temperature: {val('st_teff', 'K', 0)}",
-        f"Star radius: {val('st_rad', 'solar radii')}",
-        f"Star mass: {val('st_mass', 'solar masses')}",
-        f"Earth Similarity Index: {esi_txt}",
-        f"Habitable zone status: {p.get('hz_status')}",
-    ])
+def facts_block(records):
+    parts = []
+    for p in records:
+        f = build_facts(p)
+        parts.append(f"## {p['pl_name']}\n" + "\n".join("- " + line for line in f["lines"]))
+    return "\n\n".join(parts)
+
+
+def build_messages(message, names, history, mode):
+    records = [BY_NAME[n.lower()] for n in names if n.lower() in BY_NAME][:8]
+    facts = facts_block(records) or "No planet selected."
+    system = f"{BASE_RULES}\n\n{MODE_PROMPTS.get(mode, MODE_PROMPTS['free'])}\n\nFACTS\n{facts}"
+    msgs = [{"role": "system", "content": system}]
+    for h in history[-4:]:
+        if h.get("role") in ("user", "assistant") and h.get("content"):
+            msgs.append({"role": h["role"], "content": h["content"]})
+    msgs.append({"role": "user", "content": message})
+    return msgs
+
 
 def ask_llm(messages):
     try:
-        resp = client.chat.completions.create(model=MODEL, messages=messages, temperature=0.4)
+        resp = client.chat.completions.create(
+            model=MODEL, messages=messages, temperature=0.3, max_tokens=260
+        )
     except Exception as e:
         raise HTTPException(502, f"LLM error: {e}")
     return resp.choices[0].message.content
 
 
+def stream_llm(messages):
+    try:
+        stream = client.chat.completions.create(
+            model=MODEL, messages=messages, temperature=0.3, max_tokens=260, stream=True
+        )
+        for chunk in stream:
+            if chunk.choices and chunk.choices[0].delta.content:
+                yield chunk.choices[0].delta.content
+    except Exception as e:
+        yield f"\n[AI model error: {e}]"
+
+
 # ---------- data endpoints ----------
 
-CARD_KEYS = ["pl_name", "hostname", "sy_dist", "pl_rade", "pl_orbper", "pl_eqt",
-             "ra", "dec", "type", "esi", "esi_factors", "hz_status", "discoverymethod", "disc_year"]
+CARD_KEYS = [
+    "pl_name", "hostname", "sy_dist", "pl_rade", "pl_bmasse", "pl_orbper", "pl_orbsmax",
+    "pl_eqt", "flux", "st_teff", "st_rad", "sy_pnum", "ra", "dec", "type", "esi",
+    "esi_factors", "hz_status", "discoverymethod", "disc_year",
+]
 
 
 def card(p):
@@ -121,13 +152,13 @@ def card(p):
 
 @app.get("/planets")
 def list_planets(
-    q: Optional[str] = None,           # search by planet or star name
-    type: Optional[str] = None,        # Earth-sized / Super-Earth / Neptune-like / Gas giant
-    habitable: bool = False,           # only planets in the habitable zone
+    q: Optional[str] = None,
+    type: Optional[str] = None,
+    habitable: bool = False,
     min_esi: Optional[float] = None,
-    max_dist: Optional[float] = None,  # parsecs
-    sort: str = "name",                # name | esi | distance
-    limit: int = 0,                    # 0 = no limit
+    max_dist: Optional[float] = None,
+    sort: str = "name",
+    limit: int = 0,
 ):
     res = PLANETS
     if q:
@@ -155,6 +186,11 @@ def list_planets(
 @app.get("/planets/{name}")
 def get_planet(name: str):
     return get_or_404(name)
+
+
+@app.get("/facts/{name}")
+def get_facts(name: str):
+    return build_facts(get_or_404(name))
 
 
 @app.get("/compare")
@@ -210,30 +246,28 @@ def insight(name: str):
     p = get_or_404(name)
     key = p["pl_name"]
     if key not in INSIGHT_CACHE:
-        prompt = ("In 3 short sentences: what kind of world is this, what is most notable about it, "
-                  "and how Earth-like is it (explain the ESI and habitable-zone result)?")
-        messages = [
-            {"role": "system", "content": f"{SYSTEM_PROMPT}\n\nPLANET DATA:\n{describe(p)}"},
-            {"role": "user", "content": prompt},
-        ]
-        INSIGHT_CACHE[key] = ask_llm(messages)
+        msgs = build_messages("Give me the summary.", [key], [], "insight")
+        INSIGHT_CACHE[key] = ask_llm(msgs)
     return {"planet": key, "insight": INSIGHT_CACHE[key]}
 
 
 class ChatRequest(BaseModel):
     message: str
-    planets: list[str] = []      # 1 name = explain, 2+ = compare
+    planets: list[str] = []      # 1 name = explain, 2+ = compare / whole system
     history: list[dict] = []
+    mode: str = "free"           # life | earth | special | free
 
 
 @app.post("/chat")
 def chat(req: ChatRequest):
-    records = [BY_NAME[n.lower()] for n in req.planets if n.lower() in BY_NAME]
-    context = "\n\n".join(describe(p) for p in records) if records else "No planet selected."
-    messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nPLANET DATA:\n{context}"}]
-    messages += [
-        {"role": m["role"], "content": str(m.get("content", ""))[:2000]}
-        for m in req.history[-6:] if m.get("role") in ("user", "assistant")
-    ]
-    messages.append({"role": "user", "content": req.message})
-    return {"reply": ask_llm(messages)}
+    return {"reply": ask_llm(build_messages(req.message, req.planets, req.history, req.mode))}
+
+
+@app.post("/chat/stream")
+def chat_stream(req: ChatRequest):
+    msgs = build_messages(req.message, req.planets, req.history, req.mode)
+    return StreamingResponse(
+        stream_llm(msgs),
+        media_type="text/plain",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

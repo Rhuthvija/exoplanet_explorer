@@ -3,12 +3,7 @@ import * as THREE from "three";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, Html, Stars, Trail } from "@react-three/drei";
 import { EffectComposer, Bloom } from "@react-three/postprocessing";
-
-const SUGGESTIONS = [
-  "Could life exist here?",
-  "How does it compare to Earth?",
-  "What makes this system special?",
-];
+import Astronomer from "./Astronomer";
 
 const orbitOf = (i) => 2.5 + i * 1.6; // evenly spaced for readability, not to scale
 
@@ -303,83 +298,6 @@ function SizeCompare({ radius, color }) {
   );
 }
 
-function AskBox({ api, names, label }) {
-  const key = names.join("|");
-  const [question, setQuestion] = useState("");
-  const [reply, setReply] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    setQuestion("");
-    setReply("");
-  }, [key]);
-
-  async function send(text) {
-    const message = text.trim();
-    if (!message || !names.length) return;
-    setLoading(true);
-    setReply("");
-    try {
-      const res = await fetch(`${api}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, planets: names }),
-      });
-      const data = await res.json();
-      setReply(res.ok ? data.reply : `Error: ${data.detail || res.status}`);
-    } catch (err) {
-      setReply(`Could not reach the backend: ${err.message}`);
-    }
-    setLoading(false);
-  }
-
-  const chipStyle = {
-    width: "auto",
-    marginTop: 0,
-    padding: "5px 10px",
-    fontSize: 12,
-    borderRadius: 999,
-    border: "1px solid #3b4a7a",
-    background: "#141b38",
-    color: "#cbd5e1",
-    cursor: "pointer",
-  };
-
-  return (
-    <div style={{ marginTop: 14, borderTop: "1px solid #26335f", paddingTop: 12 }}>
-      <div style={{ color: "#8d9ac7", fontSize: 13, marginBottom: 8 }}>Ask the astronomer about {label}</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
-        {SUGGESTIONS.map((s) => (
-          <button
-            key={s}
-            type="button"
-            disabled={loading}
-            style={chipStyle}
-            onClick={() => {
-              setQuestion(s);
-              send(s);
-            }}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-      <form
-        onSubmit={(e) => {
-          e.preventDefault();
-          send(question);
-        }}
-      >
-        <input value={question} onChange={(e) => setQuestion(e.target.value)} placeholder="Type your own question..." />
-        <button type="submit" disabled={loading}>
-          {loading ? "Thinking..." : "Ask"}
-        </button>
-      </form>
-      {reply && <div style={{ marginTop: 10, fontSize: 14, lineHeight: 1.5, color: "#e2e8f0", whiteSpace: "pre-wrap" }}>{reply}</div>}
-    </div>
-  );
-}
-
 /* ---------- main component ---------- */
 
 export default function SystemView({ api, hostname, initialPlanet, onBack }) {
@@ -437,7 +355,7 @@ export default function SystemView({ api, hostname, initialPlanet, onBack }) {
           zIndex: 10,
           top: 16,
           right: 16,
-          width: 320,
+          width: 360,
           maxHeight: "calc(100% - 32px)",
           overflowY: "auto",
           padding: 16,
@@ -464,9 +382,7 @@ export default function SystemView({ api, hostname, initialPlanet, onBack }) {
             <Row k="Eq. temp" v={picked.pl_eqt != null ? `${picked.pl_eqt} K` : "n/a"} />
             <Row k="Period" v={picked.pl_orbper != null ? `${picked.pl_orbper} days` : "n/a"} />
             <SizeCompare radius={picked.pl_rade} color={colorFor(picked.hz_status)} />
-            <div style={{ fontSize: 11, color: "#6b7aa8", marginTop: 6 }}>
-              Surface look is illustrative, not observed.
-            </div>
+            <div style={{ fontSize: 11, color: "#6b7aa8", marginTop: 6 }}>Surface look is illustrative, not observed.</div>
           </>
         ) : (
           <>
@@ -477,7 +393,7 @@ export default function SystemView({ api, hostname, initialPlanet, onBack }) {
             <Row k="Star temp" v={teff != null ? `${teff} K` : "n/a"} />
           </>
         )}
-        <AskBox api={api} names={askNames} label={askLabel} />
+        <Astronomer api={api} names={askNames} label={askLabel} />
       </div>
 
       <Canvas camera={{ position: [0, 45, 70], fov: 50 }} onPointerMissed={() => setPicked(null)}>
