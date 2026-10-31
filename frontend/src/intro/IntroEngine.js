@@ -139,7 +139,7 @@ function galaxyTexture(seed, kind) {
 /* ----------------------------------------- engine ----------------------------------------- */
 
 export class IntroEngine {
-  constructor(canvas, { maxDpr = 1.5, onTime, onExitFade, onExitDone, manual = false, bakeScale = 1 } = {}) {
+  constructor(canvas, { maxDpr = 1.5, onTime, onExitFade, onExitDone, onContextLost, manual = false, bakeScale = 1 } = {}) {
     this.canvas = canvas;
     this.onTime = onTime;
     this.onExitFade = onExitFade;
@@ -150,6 +150,15 @@ export class IntroEngine {
     this.exitDoneSent = false;
 
     const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: "high-performance" });
+    // if the GPU resets, hand over to the app instead of showing a black screen
+    this.onLostCb = onContextLost;
+    this.onLost = (e) => {
+      e.preventDefault();
+      console.warn("SOLICE intro: WebGL context lost, skipping intro");
+      renderer.setAnimationLoop(null);
+      onContextLost?.();
+    };
+    canvas.addEventListener("webglcontextlost", this.onLost);
     this.pr = Math.min(window.devicePixelRatio || 1, maxDpr);
     renderer.setPixelRatio(this.pr);
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -181,22 +190,15 @@ export class IntroEngine {
     this.buildLocal();
     this.buildFx();
 
-    // 4x MSAA on the HDR buffer keeps orbit lines, rings and planet edges clean
-    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: 4 });
-    const composer = new EffectComposer(renderer, rt);
-    this.mainPass = new RenderPass(this.cosmos, this.camera);
-    this.fxPass = new RenderPass(this.fx, this.camera);
-    this.fxPass.clear = false;
-    this.fxPass.clearDepth = true;
-    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.5, 0.9);
-    composer.addPass(this.mainPass);
-    composer.addPass(this.fxPass);
-    composer.addPass(this.bloom);
-    this.grade = new ShaderPass(S.GRADE_SHADER);
-    composer.addPass(this.grade);
-    composer.addPass(new OutputPass());
+    // Render quality ladder. If a GPU can't handle a level (the screen comes out black), drop to the next:
+    //   0: HDR + 4x MSAA + bloom + film grade   1: HDR + bloom, no MSAA, no grade   2: plain rendering, no post effects
+    this.mainScene = this.cosmos;
+    // ?intro=safe forces level 1, ?intro=basic forces level 2 (handy for checking GPU problems)
+    const forced = typeof location !== "undefined" ? new URLSearchParams(location.search).get("intro") : null;
+    this.mode = forced === "basic" ? 2 : forced === "safe" ? 1 : 0;
+    this.health = { frames: 0, ok: false };
+    this.buildComposer();
     this.perf = { frames: 0, time: 0, checked: false };
-    this.composer = composer;
 
     this.resize = this.resize.bind(this);
     window.addEventListener("resize", this.resize);
@@ -209,6 +211,80 @@ export class IntroEngine {
     this.tAcc = 0;
     this.lastNow = null;
     if (!manual) renderer.setAnimationLoop(() => this.frame());
+  }
+
+  buildComposer() {
+    this.composer?.renderTarget1?.dispose();
+    this.composer?.renderTarget2?.dispose();
+    this.composer = null;
+    this.grade = null;
+    if (this.mode >= 2) return;
+    const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: this.mode === 0 ? 4 : 0 });
+    const composer = new EffectComposer(this.renderer, rt);
+    this.mainPass = new RenderPass(this.mainScene, this.camera);
+    this.fxPass = new RenderPass(this.fx, this.camera);
+    this.fxPass.clear = false;
+    this.fxPass.clearDepth = true;
+    this.bloom = new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.5, 1.0); // only truly bright things (the Sun, warp) glow
+    composer.addPass(this.mainPass);
+    composer.addPass(this.fxPass);
+    composer.addPass(new ShaderPass(S.SANITIZE_SHADER)); // stops one bad pixel from blacking out the frame
+    composer.addPass(this.bloom);
+    if (this.mode === 0) {
+      this.grade = new ShaderPass(S.GRADE_SHADER);
+      composer.addPass(this.grade);
+    }
+    composer.addPass(new OutputPass());
+    this.composer = composer;
+    if (this.size) this.resize();
+  }
+
+  render() {
+    if (this.composer) {
+      this.mainPass.scene = this.mainScene;
+      this.composer.render();
+      return;
+    }
+    const R = this.renderer;
+    R.setRenderTarget(null);
+    R.autoClear = true;
+    R.render(this.mainScene, this.camera);
+    R.autoClear = false;
+    R.clearDepth();
+    R.render(this.fx, this.camera);
+    R.autoClear = true;
+  }
+
+  // The first frames of the intro always show the bright galaxy core in the middle of the screen.
+  // If the middle is pure black, this GPU didn't like the current render level: step down.
+  checkHealth(t) {
+    const H = this.health;
+    if (H.ok) return;
+    H.frames++;
+    if (H.frames < 12 || t < 0.3) return;
+    const gl = this.renderer.getContext();
+    const w = gl.drawingBufferWidth;
+    const h = gl.drawingBufferHeight;
+    const N = 48;
+    const buf = new Uint8Array(N * N * 4);
+    gl.readPixels(Math.max(0, (w >> 1) - N / 2), Math.max(0, (h >> 1) - N / 2), N, N, gl.RGBA, gl.UNSIGNED_BYTE, buf);
+    let max = 0;
+    for (let i = 0; i < buf.length; i += 4) max = Math.max(max, buf[i], buf[i + 1], buf[i + 2]);
+    if (max > 12) {
+      H.ok = true;
+      console.info(`[SOLICE] intro rendering OK at level ${this.mode}`);
+      return;
+    }
+    console.warn(`[SOLICE] black frame at render level ${this.mode}, stepping down`);
+    this.mode++;
+    H.frames = 0;
+    if (this.mode > 2) {
+      H.ok = true;
+      this.renderer.setAnimationLoop(null);
+      this.onLostCb?.();
+      return;
+    }
+    this.buildComposer();
   }
 
   /* ------------------------------------ public controls ------------------------------------ */
@@ -234,6 +310,7 @@ export class IntroEngine {
 
   dispose() {
     this.renderer.setAnimationLoop(null);
+    this.canvas.removeEventListener("webglcontextlost", this.onLost);
     window.removeEventListener("resize", this.resize);
     const all = new Set();
     [this.cosmos, this.local, this.fx].forEach((s) =>
@@ -248,7 +325,8 @@ export class IntroEngine {
     all.forEach((x) => x.dispose?.());
     this.bakes.forEach((rt) => rt.dispose());
     this.bakeTri.dispose();
-    this.composer.dispose?.();
+    this.composer?.renderTarget1?.dispose();
+    this.composer?.renderTarget2?.dispose();
     this.renderer.dispose();
   }
 
@@ -256,9 +334,11 @@ export class IntroEngine {
     const w = this.canvas.clientWidth || window.innerWidth;
     const h = this.canvas.clientHeight || window.innerHeight;
     this.renderer.setPixelRatio(this.pr);
-    this.composer.setPixelRatio(this.pr);
     this.renderer.setSize(w, h, false);
-    this.composer.setSize(w, h);
+    if (this.composer) {
+      this.composer.setPixelRatio(this.pr);
+      this.composer.setSize(w, h);
+    }
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.size = { w, h };
@@ -289,9 +369,25 @@ export class IntroEngine {
     mesh.frustumCulled = false;
     const sc = new THREE.Scene();
     sc.add(mesh);
-    this.renderer.setRenderTarget(rt);
-    this.renderer.render(sc, this.bakeCam);
-    this.renderer.setRenderTarget(null);
+    // draw in small tiles: one huge draw can take long enough that the browser resets the GPU (black screen)
+    const R = this.renderer;
+    const TILE = 256;
+    rt.scissorTest = true; // a render target uses its own scissor settings
+    rt.texture.generateMipmaps = false;
+    const nx = Math.ceil(w / TILE);
+    const ny = Math.ceil(h / TILE);
+    for (let j = 0; j < ny; j++) {
+      for (let i = 0; i < nx; i++) {
+        if (i === nx - 1 && j === ny - 1) rt.texture.generateMipmaps = true; // build mipmaps after the last tile
+        rt.scissor.set(i * TILE, j * TILE, TILE, TILE);
+        rt.viewport.set(0, 0, w, h);
+        R.setRenderTarget(rt);
+        R.render(sc, this.bakeCam);
+      }
+    }
+    rt.scissor.set(0, 0, w, h);
+    rt.scissorTest = false;
+    R.setRenderTarget(null);
     mat.dispose();
     this.bakes.push(rt);
     return rt.texture;
@@ -355,7 +451,7 @@ export class IntroEngine {
       const k = r();
       const idx = Math.min(5, Math.floor(Math.pow(k, 1 - warmth * 0.6) * 6));
       c.copy(palette[idx]);
-      const bright = (r() < 0.015 ? 3.2 : 0.55 + Math.pow(r(), 2.5) * 1.3) * brightK;
+      const bright = Math.min(0.85, (r() < 0.015 ? 1.0 : 0.45 + Math.pow(r(), 2.5) * 0.45) * brightK);
       c.multiplyScalar(bright);
       col.set([c.r, c.g, c.b], i * 3);
       size[i] = sizes[0] + Math.pow(r(), 6) * (sizes[1] - sizes[0]);
@@ -547,6 +643,7 @@ export class IntroEngine {
     this.sunMat = new THREE.ShaderMaterial({ uniforms: { uTime: { value: 0 } }, vertexShader: S.SUN_VERT, fragmentShader: S.SUN_FRAG });
     const sun = new THREE.Mesh(new THREE.SphereGeometry(1.5, 96, 64), this.sunMat);
     sc.add(sun);
+    this.sunGlow = [];
     const glowTex = radialTexture([
       [0, "rgba(255,236,200,1)"],
       [0.08, "rgba(255,210,150,0.75)"],
@@ -560,6 +657,8 @@ export class IntroEngine {
     ].forEach(([s, o]) => {
       const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, transparent: true, opacity: o, depthWrite: false, blending: THREE.AdditiveBlending }));
       sp.scale.set(s, s, 1);
+      sp.userData.op = o;
+      this.sunGlow.push(sp);
       sc.add(sp);
     });
 
@@ -598,7 +697,7 @@ export class IntroEngine {
       let mat;
       if (pl.earth) {
         const uA = this.bake(S.BAKE_EARTH_A, {}, 4096, 2048);
-        const uB = this.bake(S.BAKE_EARTH_B, {}, 4096, 2048);
+        const uB = this.bake(S.BAKE_EARTH_B, {}, 2048, 1024);
         mat = new THREE.ShaderMaterial({
           uniforms: { uTime: { value: 0 }, uA: { value: uA }, uB: { value: uB } },
           vertexShader: S.PLANET_VERT,
@@ -693,18 +792,18 @@ export class IntroEngine {
     const col = new Float32Array(N * 3);
     const w = new Float32Array(N);
     const r = rng(101);
-    // mostly white and pale blue, a few soft violet, rose and amber streaks
+    // real star colours (blue-white to warm), with a light touch of the violet theme
     const pal = [
-      ["#e9efff", 0.46],
-      ["#b8ccff", 0.18],
-      ["#9fd8ff", 0.1],
-      ["#c3a8ff", 0.12],
-      ["#f3a9d8", 0.08],
-      ["#ffcf9a", 0.06],
+      ["#eef2ff", 0.42],
+      ["#c4d4ff", 0.22],
+      ["#a9c1ff", 0.12],
+      ["#cbb6ff", 0.1],
+      ["#ffe1c2", 0.08],
+      ["#f0b8dc", 0.06],
     ];
     const c = new THREE.Color();
     for (let i = 0; i < N; i++) {
-      const rad = 3.5 + Math.pow(r(), 0.9) * 36;
+      const rad = 0.4 + Math.sqrt(r()) * 38;
       const th = r() * TAU;
       xy.set([Math.cos(th) * rad, Math.sin(th) * rad], i * 2);
       z[i] = r() * 420;
@@ -728,6 +827,7 @@ export class IntroEngine {
         uTravel: { value: 0 },
         uStretch: { value: 0 },
         uIntensity: { value: 0 },
+        uShape: { value: 0 },
         uRes: { value: new THREE.Vector2(1, 1) },
         uPR: { value: this.pr },
       },
@@ -774,8 +874,9 @@ export class IntroEngine {
     const dt = Math.min(0.05, Math.max(0, t - (this.lastT ?? t)));
     this.lastT = t;
     this.update(t, dt);
-    this.grade.uniforms.uTime.value = t;
-    this.composer.render();
+    if (this.grade) this.grade.uniforms.uTime.value = t;
+    this.render();
+    if (this.fixedT == null) this.checkHealth(t);
     this.onTime?.(t, this.exitAt != null ? t - this.exitAt : null);
   }
 
@@ -789,10 +890,10 @@ export class IntroEngine {
     if (P.frames < 110) return;
     P.checked = true;
     const fps = (P.frames - 20) / P.time;
-    if (fps < 48 && this.pr > 1) {
+    if (fps < 40 && this.pr > 1) {
       this.pr = 1;
       this.resize();
-    } else if (fps < 40) {
+    } else if (fps < 40 && this.bloom) {
       this.bloom.enabled = fps > 30;
     }
   }
@@ -811,21 +912,22 @@ export class IntroEngine {
     const cam = this.camera;
     const T = this.tmp;
     const inCosmos = t < TL.swap && this.exitAt == null;
-    this.mainPass.scene = inCosmos ? this.cosmos : this.local;
+    this.mainScene = inCosmos ? this.cosmos : this.local;
 
     // ---- warp effect
     const warp = this.warpAt(t);
     // travel speed follows the warp, plus a gentle base speed so streaks never freeze mid-screen
-    this.travel += dt * (20 + 520 * warp * warp);
+    const speed = 6 + 560 * Math.pow(warp, 2.2); // units per second: gentle at first, then it really goes
+    this.travel += dt * speed;
     if (this.fixedT != null) this.travel = t * 160;
     const su = this.streakMat.uniforms;
     su.uTravel.value = this.travel;
-    su.uStretch.value = 2 + 120 * warp * warp;
-    su.uIntensity.value = smooth(0.02, 0.35, warp);
-    const flash = Math.exp(-Math.pow((t - TL.swap) / 0.22, 2)) * (this.exitAt == null ? 1 : 0);
-    this.glowMat.uniforms.uGlow.value = warp * 0.55;
-    this.glowMat.uniforms.uFlash.value = flash * 0.18;
-    let fov = 50 + 26 * warp;
+    su.uStretch.value = 0.2 * speed; // a streak is how far a star moves while the "shutter" is open
+    su.uShape.value = smooth(0.05, 0.4, warp);
+    su.uIntensity.value = smooth(0.0, 0.3, warp);
+    this.glowMat.uniforms.uGlow.value = Math.pow(warp, 3) * 0.18; // only a faint haze at the very peak
+    this.glowMat.uniforms.uFlash.value = 0;
+    let fov = 50 + 22 * warp;
 
     if (inCosmos) {
       this.updateCosmos(t);
@@ -874,9 +976,15 @@ export class IntroEngine {
     const gu = this.galaxyMat.uniforms;
     gu.uTime.value = t;
     gu.uScale.value = (this.size.h * this.pr) / (2 * Math.tan(THREE.MathUtils.degToRad(cam.fov / 2)));
-    const fade = THREE.MathUtils.lerp(0.35, 1, smooth(6, 60, dist));
+    const out = 1 - smooth(TL.swap - 1.3, TL.swap - 0.05, t); // the galaxy dissolves into the streaks
+    const fade = THREE.MathUtils.lerp(0.35, 1, smooth(6, 60, dist)) * out;
     this.discMat.uniforms.uFade.value = fade;
     gu.uFade.value = fade;
+    this.cosmos.backgroundIntensity = out;
+    this.cosmosFarStars.material.uniforms.uFade.value = out;
+    this.cosmosSparkle.material.uniforms.uFade.value = out;
+    this.galaxies.visible = out > 0.01;
+    this.galaxies.children.forEach((g) => (g.material.opacity = (g.userData.op ?? (g.userData.op = g.material.opacity)) * out));
 
     // far stars travel with the camera, so they act as infinitely far away
     this.cosmosFarStars.position.copy(cam.position);
@@ -884,13 +992,11 @@ export class IntroEngine {
     this.cosmosSparkle.material.uniforms.uTime.value = t;
     this.cosmosFarStars.material.uniforms.uTime.value = t;
     this.cosmosNearStars.material.uniforms.uTime.value = t;
-    this.cosmosNearStars.material.uniforms.uFade.value = 1 - smooth(TL.approach - 1, TL.approach + 1.5, t) * 0.7;
-    // galaxies dim a little as the Milky Way fills the view
-    this.galaxies.children.forEach((g) => (g.visible = true));
+    this.cosmosNearStars.material.uniforms.uFade.value = (1 - smooth(TL.approach - 1, TL.approach + 1.5, t) * 0.7) * out;
 
     this.sunMarker.position.copy(sunW);
     this.sunMarker.scale.setScalar(Math.max(0.6, dist * 0.06));
-    this.sunMarker.material.opacity = smooth(TL.approach - 2, TL.approach, t) * 0.9;
+    this.sunMarker.material.opacity = smooth(TL.approach - 2, TL.approach, t) * 0.9 * out;
   }
 
   updateLocal(t) {
@@ -981,10 +1087,13 @@ export class IntroEngine {
     this.localFarStars.material.uniforms.uTime.value = t;
     this.localNearStars.material.uniforms.uTime.value = t;
     // the sky brightens in as we drop out of warp
-    const skyIn = smooth(TL.swap, TL.warpOut, t);
+    const skyIn = this.exitAt != null ? 1 : smooth(TL.swap, TL.warpOut, t);
     this.local.backgroundIntensity = skyIn;
     this.localSparkle.material.uniforms.uFade.value = skyIn;
-    this.localFarStars.material.uniforms.uFade.value = 0.3 + 0.7 * skyIn;
+    this.localFarStars.material.uniforms.uFade.value = skyIn;
+    this.localNearStars.material.uniforms.uFade.value = skyIn;
+    const sunIn = this.exitAt != null ? 1 : smooth(TL.swap, TL.swap + 1.4, t);
+    this.sunGlow.forEach((g) => (g.material.opacity = g.userData.op * sunIn));
 
     if (this.exitAt != null) {
       const u = t - this.exitAt;

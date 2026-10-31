@@ -128,10 +128,14 @@ void main(){
   if (uFixed > 0.5) gl_Position = gl_Position.xyww;  // sky-dome stars sit on the far plane
   float s = aSize;
   if (uFixed < 0.5) s = aSize * clamp(140.0 / -mv.z, 0.35, 4.0);
-  float tw = 0.85 + 0.15 * sin(uTime * (0.7 + aSeed * 2.5) + aSeed * 40.0);
+  float tw = 1.0 + 0.04 * sin(uTime * (0.25 + aSeed * 0.35) + aSeed * 40.0);   // barely-there, slow shimmer
   vSize = s * uPR;
-  gl_PointSize = max(vSize, 1.0) * 3.0;          // room for the soft halo
-  float dim = clamp(vSize, 0.25, 1.0);           // sub-pixel stars get dimmer, not smaller
+  // A star is never drawn smaller than 2.4 px: anything smaller flickers as it slides across pixels.
+  // Small stars are dimmed by their area instead, so they still look small.
+  gl_PointSize = max(vSize, 2.4) * 3.0;
+  float k = clamp(vSize / 2.4, 0.0, 1.0);
+  float dim = max(k * k, 0.12);
+  vSize = max(vSize, 2.4);
   vColor = aColor * tw * dim * uFade;
 }
 `;
@@ -149,7 +153,7 @@ void main(){
   float spikes = (exp(-q.y * 40.0) * exp(-q.x * 1.6) + exp(-q.x * 40.0) * exp(-q.y * 1.6)) * uSpike;
   float a = core + halo + spikes;
   if (a < 0.003) discard;
-  gl_FragColor = vec4(vColor * a, 1.0);
+  gl_FragColor = vec4(min(vColor * a, vec3(2.0)), 1.0);
 }
 `;
 
@@ -183,7 +187,7 @@ float starLayer(vec2 p, float cell, float fp, float dens, float seed){
   vec2 off = (vec2(hash21(id + seed + 7.7), hash21(id + seed + 3.1)) - 0.5) * 0.6;
   float d = length(f - off);
   float px = cell / max(fp, 1e-6);
-  float lod = smoothstep(1.2, 3.0, px) * (1.0 - smoothstep(40.0, 120.0, px));
+  float lod = smoothstep(1.5, 6.0, px) * (1.0 - smoothstep(30.0, 140.0, px));
   float b = pow(hash21(id + seed + 11.3), 2.0) * 0.9 + 0.1;
   return (1.0 - smoothstep(0.0, 0.30, d)) * b * lod;
 }
@@ -242,9 +246,10 @@ void main(){
   vec3 p = vec3(cos(th) * r, sin(th) * r, position.z);   // disc lies in the local XY plane
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
-  float tw = 0.78 + 0.22 * sin(uTime * (1.5 + aSeed * 3.0) + aSeed * 50.0);
-  gl_PointSize = clamp(aSB.x * uScale / max(-mv.z, 0.01), 1.0, uMaxSize);
-  vColor = aColor * aSB.y * tw;
+  float ps = aSB.x * uScale / max(-mv.z, 0.01);
+  gl_PointSize = clamp(ps, 2.6, uMaxSize);
+  float k = clamp(ps / 2.6, 0.0, 1.0);
+  vColor = aColor * aSB.y * max(k * k, 0.08);   // tiny particles fade by area instead of flickering
 }
 `;
 
@@ -256,7 +261,7 @@ void main(){
   float d = length(gl_PointCoord - 0.5);
   float a = 1.0 - smoothstep(0.0, 0.5, d);
   a *= a;
-  gl_FragColor = vec4(toLin(vColor) * uFade * a * 0.8, 1.0);
+  gl_FragColor = vec4(min(toLin(vColor) * uFade * a * 0.8, vec3(2.0)), 1.0);
 }
 `;
 
@@ -490,13 +495,13 @@ varying vec3 vPosW;
 varying vec3 vCenter;
 vec3 toLin(vec3 c){ return pow(max(c, 0.0), vec3(2.2)); }
 void main(){
-  vec3 rd = normalize(vPosW - cameraPosition);
+  vec3 rd = (vPosW - cameraPosition) / max(length(vPosW - cameraPosition), 1e-5);
   vec3 oc = vCenter - cameraPosition;
   float tc = dot(oc, rd);
   vec3 closest = cameraPosition + rd * tc;            // point on the view ray nearest the planet centre
   float b = length(closest - vCenter) / uR;            // 1 = exactly at the planet's edge
   float glow = exp(-max(b - 1.0, 0.0) / uH) * smoothstep(1.0 + uH * 5.0, 1.0, b);
-  vec3 up = normalize(closest - vCenter);
+  vec3 up = (closest - vCenter) / max(length(closest - vCenter), 1e-5);
   vec3 L = normalize(-vCenter);
   float day = smoothstep(-0.35, 0.45, dot(up, L));
   float sunset = exp(-pow(dot(up, L) * 3.5, 2.0));
@@ -587,7 +592,7 @@ const float LEN = 420.0;
 void main(){
   // streaks live in camera space and run parallel to the view axis, so they always fly straight at the viewer
   float zh = -mod(aZ - uTravel * aSpd, LEN) - 1.5;
-  float zt = zh - (0.4 + uStretch * aSpd);
+  float zt = zh - (0.05 + uStretch * aSpd);
   float z = mix(zt, zh, position.y);
   vec2 perp = normalize(vec2(-aXY.y, aXY.x));
   float f = projectionMatrix[1][1];
@@ -598,12 +603,13 @@ void main(){
   vCol = aCol;
   vAlong = position.y;
   vSide = position.x;
-  vFade = (1.0 - smoothstep(LEN * 0.55, LEN, -zh)) * smoothstep(1.5, 10.0, -zh);
+  vFade = (1.0 - smoothstep(LEN * 0.2, LEN * 0.75, -zh)) * smoothstep(1.5, 10.0, -zh);  // far-away stars stay faint, so the centre doesn't white out
 }
 `;
 
 export const STREAK_FRAG = /* glsl */ `
 uniform float uIntensity;
+uniform float uShape;      // 0 = round dot, 1 = streak with a fading tail
 varying vec3 vCol;
 varying float vAlong;
 varying float vSide;
@@ -611,8 +617,8 @@ varying float vFade;
 vec3 toLin(vec3 c){ return pow(max(c, 0.0), vec3(2.2)); }
 void main(){
   float across = 1.0 - vSide * vSide;
-  float a = across * across * pow(vAlong, 1.6) * vFade * uIntensity;
-  gl_FragColor = vec4(toLin(vCol) * a * 1.3, 1.0);
+  float a = across * across * mix(1.0, pow(vAlong, 1.4), uShape) * vFade * uIntensity;
+  gl_FragColor = vec4(min(toLin(vCol) * a * 1.15, vec3(4.0)), 1.0);
 }
 `;
 
@@ -638,7 +644,7 @@ void main(){
 `;
 
 export const GRADE_SHADER = {
-  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCA: { value: 0.0025 }, uGrain: { value: 0.04 } },
+  uniforms: { tDiffuse: { value: null }, uTime: { value: 0 }, uCA: { value: 0.0025 }, uGrain: { value: 0.0 } },
   vertexShader: /* glsl */ `
     varying vec2 vUv;
     void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
@@ -659,6 +665,29 @@ export const GRADE_SHADER = {
       float g = h(gl_FragCoord.xy + fract(uTime * 7.31) * 517.0) - 0.5;
       col += g * uGrain * (0.02 + sqrt(max(l, 0.0)) * 0.25);
       gl_FragColor = vec4(max(col, 0.0), 1.0);
+    }
+  `,
+};
+
+// Safety net before the glow pass: any NaN / infinite / absurdly bright pixel (which some GPUs produce where
+// thousands of additive particles overlap) would be smeared over the whole screen by the bloom blur and show
+// up as a one-frame black flash. This replaces such pixels and caps brightness.
+export const SANITIZE_SHADER = {
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: /* glsl */ `
+    varying vec2 vUv;
+    void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }
+  `,
+  fragmentShader: /* glsl */ `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    float fix1(float v){
+      bool bad = !(v == v) || v > 1.0e4 || v < -1.0e4;   // NaN or infinity
+      return bad ? 0.0 : clamp(v, 0.0, 40.0);
+    }
+    void main(){
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      gl_FragColor = vec4(fix1(c.r), fix1(c.g), fix1(c.b), 1.0);
     }
   `,
 };

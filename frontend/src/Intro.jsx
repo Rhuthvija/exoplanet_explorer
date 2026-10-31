@@ -12,6 +12,7 @@ export default function Intro({ onLeaving, onDone }) {
   const stageRef = useRef(-1);
   const capRef = useRef(-1);
   const doneRef = useRef(false);
+  const lastCapRef = useRef(null);
   const [stage, setStage] = useState(0); // 0 journey · 1 title · 2 tagline · 3 button
   const [caption, setCaption] = useState(-1);
   const [exiting, setExiting] = useState(false);
@@ -44,6 +45,10 @@ export default function Intro({ onLeaving, onDone }) {
           onLeaving?.();
         },
         onExitDone: finish,
+        onContextLost: () => {
+          onLeaving?.();
+          finish();
+        },
       });
     } catch (err) {
       // no WebGL: skip straight to the app
@@ -84,19 +89,21 @@ export default function Intro({ onLeaving, onDone }) {
 
   const ui = !exiting;
   const cap = caption >= 0 ? CAPTIONS[caption] : null;
+  if (cap) lastCapRef.current = cap;
+  const shownCap = cap || lastCapRef.current;
 
   return (
     <div className={`solice-intro${fading ? " is-fading" : ""}`}>
       <canvas ref={canvasRef} className="solice-canvas" />
       <div className="solice-vignette" />
 
-      {/* location tag, bottom left, like a documentary lower third */}
-      <div className={`solice-caption${cap ? " is-on" : ""}`} key={caption}>
-        {cap && (
+      {/* location tag, bottom left, like a documentary lower third. It fades in and out instead of popping. */}
+      <div className={`solice-caption${cap ? " is-on" : ""}`}>
+        {shownCap && (
           <>
             <span className="solice-caption-line" />
-            <div className="solice-caption-title">{cap.text}</div>
-            <div className="solice-caption-sub">{cap.sub}</div>
+            <div className="solice-caption-title">{shownCap.text}</div>
+            <div className="solice-caption-sub">{shownCap.sub}</div>
           </>
         )}
       </div>
