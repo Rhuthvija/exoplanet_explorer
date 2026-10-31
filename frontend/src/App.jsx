@@ -28,7 +28,7 @@ const zoomBtn = {
 };
 
 export default function App() {
-  const [showIntro, setShowIntro] = useState(true);
+  const [intro, setIntro] = useState("playing"); // playing -> leaving -> done
   const [planets, setPlanets] = useState([]);
   const [selected, setSelected] = useState(null);
   const [q, setQ] = useState("");
@@ -106,6 +106,12 @@ export default function App() {
     };
   }, [q, habitableOnly]);
 
+  // While the intro plays, only the intro is on screen (one 3D scene at a time keeps it smooth).
+  // The explorer mounts underneath as the intro's exit flight fades out.
+  const introEl =
+    intro !== "done" ? <Intro onLeaving={() => setIntro("leaving")} onDone={() => setIntro("done")} /> : null;
+  if (intro === "playing") return introEl;
+
   if (systemPlanet) {
     return (
       <SystemView
@@ -121,7 +127,7 @@ export default function App() {
 
   return (
     <>
-      {showIntro && <Intro onDone={() => setShowIntro(false)} />}
+      {introEl}
 
       <div className="bar">
         <span className="brand">🪐 Exoplanet Explorer</span>
