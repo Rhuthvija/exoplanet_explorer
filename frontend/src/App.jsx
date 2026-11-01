@@ -1,56 +1,40 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Canvas } from "@react-three/fiber";
-import { OrbitControls, Stars } from "@react-three/drei";
 import SystemView from "./SystemView";
-import GalaxyView from "./GalaxyView";
 import CompareView from "./CompareView";
 import Intro from "./Intro";
-import Dots from "./Dots";
-import Halo from "./Halo";
-import FlyTo from "./FlyTo";
 import Panel from "./Panel";
-import Nebula from "./Nebula";
-import Zoom from "./Zoom";
-import { API, makeCircleTexture } from "./utils";
+import StarMapView from "./StarMapView";
+import Wordmark from "./Wordmark";
+import Astro from "./Astro";
+import DataBadge from "./DataBadge";
+import HabitabilityView from "./HabitabilityView";
+import { API, colorFor } from "./utils";
 import "./App.css";
 
-const zoomBtn = {
-  width: 40,
-  height: 40,
-  marginTop: 0,
-  padding: 0,
-  fontSize: 20,
-  borderRadius: 10,
-  border: "1px solid #26335f",
-  background: "rgba(11, 16, 32, 0.8)",
-  color: "#e2e8f0",
-  cursor: "pointer",
-};
+const LEGEND = [
+  ["In habitable zone", "Habitable zone"],
+  ["Too hot", "Too hot"],
+  ["Too cold", "Too cold"],
+  ["Unknown", "Unknown"],
+];
 
 export default function App() {
-  const [intro, setIntro] = useState("playing"); // playing -> leaving -> done
+  // playing -> leaving -> done. Add ?nointro to the URL to skip straight to the explorer while developing.
+  const [intro, setIntro] = useState(() => (new URLSearchParams(location.search).has("nointro") ? "done" : "playing"));
   const [planets, setPlanets] = useState([]);
   const [selected, setSelected] = useState(null);
   const [q, setQ] = useState("");
   const [habitableOnly, setHabitableOnly] = useState(false);
-  const [status, setStatus] = useState("Loading...");
+  const [status, setStatus] = useState("Loading…");
   const [systemPlanet, setSystemPlanet] = useState(null);
-  const [flyTarget, setFlyTarget] = useState(null);
-  const [mode, setMode] = useState("sky"); // "sky" | "galaxy"
+  const [mode, setMode] = useState("sky"); // "sky" | "map"
   const [compare, setCompare] = useState(null); // null | { a: planetName | null }
-  const controlsRef = useRef(null);
+  const [habitability, setHabitability] = useState(false);
+  const [diving, setDiving] = useState(false);
+  const [dataVersion, setDataVersion] = useState(0); // bumps after a NASA sync, so the map reloads
+  const mapRef = useRef(null);
   const tipRef = useRef(null);
-  const zoomApi = useRef(null);
-
-  const texture = useMemo(() => makeCircleTexture(), []);
-  const habitable = useMemo(
-    () => planets.filter((p) => p.hz_status === "In habitable zone"),
-    [planets]
-  );
-  const others = useMemo(
-    () => planets.filter((p) => p.hz_status !== "In habitable zone"),
-    [planets]
-  );
+  const viewRef = useRef(null); // remembers where you were looking when you come back from a system
 
   const siblings = useMemo(() => {
     if (!selected) return [];
@@ -59,23 +43,51 @@ export default function App() {
       .sort((a, b) => (a.pl_orbper ?? Infinity) - (b.pl_orbper ?? Infinity));
   }, [planets, selected]);
 
+  const hzCount = useMemo(() => planets.filter((p) => p.hz_status === "In habitable zone").length, [planets]);
+
   // tooltip is updated directly on the DOM so mouse movement never re-renders the app
   function handleHover(p, ev) {
     const el = tipRef.current;
     if (!el) return;
     if (!p || !ev) {
-      el.style.display = "none";
+      el.style.opacity = "0";
       return;
     }
-    el.style.display = "block";
-    el.style.left = ev.clientX + 14 + "px";
-    el.style.top = ev.clientY + 14 + "px";
-    el.textContent = `${p.pl_name} · ${p.type} · ${p.hz_status}`;
+    el.style.opacity = "1";
+    el.style.transform = `translate(${ev.clientX + 16}px, ${ev.clientY + 14}px)`;
+    el.innerHTML = `<b>${p.pl_name}</b><span style="color:${colorFor(p.hz_status)}">●</span> ${p.type} · ${p.hz_status}`;
   }
 
   function goToKepler() {
-    setFlyTarget({ ra: 290.7, dec: 44.5, pl_name: "kepler-field" });
-    zoomApi.current?.set(14);
+    if (mode !== "sky") setMode("sky");
+    setTimeout(() => mapRef.current?.lookAtRaDec(290.7, 44.5, 16), mode === "sky" ? 0 : 2500);
+  }
+
+  // Astro mentioned a planet and you clicked it: select it and fly there (from any view)
+  async function showPlanet(name) {
+    let p = planets.find((x) => x.pl_name === name);
+    if (!p) {
+      try {
+        const r = await fetch(`${API}/planets/${encodeURIComponent(name)}`);
+        if (r.ok) p = await r.json();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (!p) return;
+    setSystemPlanet(null);
+    setSelected(p);
+    setTimeout(() => mapRef.current?.flyTo(p, 25), 60);
+  }
+
+  function viewSystem(p) {
+    if (diving) return;
+    setDiving(true);
+    viewRef.current = mapRef.current?.getView() ?? viewRef.current;
+    mapRef.current?.dive(p, () => {
+      setSystemPlanet(p);
+      setDiving(false);
+    });
   }
 
   useEffect(() => {
@@ -87,15 +99,10 @@ export default function App() {
       try {
         const res = await fetch(`${API}/planets?${params}`, { signal: ctrl.signal });
         const data = await res.json();
-        const list = (Array.isArray(data) ? data : []).filter(
-          (p) => p.ra != null && p.dec != null
-        );
+        const list = (Array.isArray(data) ? data : []).filter((p) => p.ra != null && p.dec != null);
         setPlanets(list);
-        if (q.trim() && list.length) {
-          setFlyTarget(list[0]);
-          zoomApi.current?.set(25);
-        }
-        setStatus(`${list.length} planets`);
+        if (q.trim() && list.length) mapRef.current?.flyTo(list[0], 25);
+        setStatus(`${list.length.toLocaleString()} worlds`);
       } catch (err) {
         if (err.name !== "AbortError") setStatus("Backend not reachable");
       }
@@ -104,14 +111,21 @@ export default function App() {
       clearTimeout(t);
       ctrl.abort();
     };
-  }, [q, habitableOnly]);
+  }, [q, habitableOnly, dataVersion]);
 
   // While the intro plays, only the intro is on screen (one 3D scene at a time keeps it smooth).
   // The explorer mounts underneath as the intro's exit flight fades out.
+  // The intro always sits in the same slot of this fragment: if it moved, React would remount it and replay it.
   const introEl =
-    intro !== "done" ? <Intro onLeaving={() => setIntro("leaving")} onDone={() => setIntro("done")} /> : null;
-  if (intro === "playing") return introEl;
+    intro !== "done" ? <Intro key="intro" onLeaving={() => setIntro("leaving")} onDone={() => setIntro("done")} /> : null;
+  return (
+    <>
+      {introEl}
+      {intro !== "playing" && renderExplorer()}
+    </>
+  );
 
+  function renderExplorer() {
   if (systemPlanet) {
     return (
       <SystemView
@@ -119,187 +133,149 @@ export default function App() {
         hostname={systemPlanet.hostname}
         initialPlanet={systemPlanet}
         onBack={() => setSystemPlanet(null)}
+        onShowPlanet={showPlanet}
       />
     );
   }
 
-  const galaxy = mode === "galaxy";
+  const sky = mode === "sky";
 
   return (
-    <>
-      {introEl}
+    <div className={`sx-app${diving ? " is-diving" : ""}`}>
 
-      <div className="bar">
-        <span className="brand">🪐 Exoplanet Explorer</span>
-        <input
-          type="text"
-          placeholder="Search planet or star"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-        />
-        <label>
-          <input
-            type="checkbox"
-            checked={habitableOnly}
-            onChange={(e) => setHabitableOnly(e.target.checked)}
-          />
-          Habitable zone only
-        </label>
-        <span className="count">{status}</span>
-        <button
-          type="button"
-          className="ghost"
-          onClick={() => setCompare({ a: selected ? selected.pl_name : null })}
-        >
-          ⚖ Compare
-        </button>
-      </div>
-
-      <div className="legend">
-        <span style={{ color: "#4ade80" }}>● in habitable zone</span>
-        {"  "}
-        <span style={{ color: "#fb923c" }}>● too hot</span>
-        {"  "}
-        <span style={{ color: "#60a5fa" }}>● too cold</span>
-        {"  "}
-        <span style={{ color: "#cbd5e1" }}>● other</span>
-      </div>
-
-      {/* sky / galaxy toggle */}
-      <div
-        style={{
-          position: "fixed",
-          zIndex: 20,
-          bottom: 16,
-          left: "50%",
-          transform: "translateX(-50%)",
-          display: "flex",
-          flexDirection: "column",
-          alignItems: "center",
-          gap: 6,
-        }}
-      >
-        <button
-          type="button"
-          onClick={() => setMode(galaxy ? "sky" : "galaxy")}
-          style={{
-            ...zoomBtn,
-            width: "auto",
-            padding: "0 18px",
-            fontSize: 14,
-            fontWeight: 600,
-            borderRadius: 999,
-          }}
-        >
-          {galaxy ? "← Back to sky view" : "Zoom out to galaxy map"}
-        </button>
-        {galaxy && (
-          <div style={{ color: "#8d9ac7", fontSize: 12 }}>
-            Distance scale is logarithmic (compressed) · Sun at centre
-          </div>
-        )}
-      </div>
-
-      {!galaxy && (
-        <div
-          style={{
-            position: "fixed",
-            zIndex: 20,
-            bottom: 16,
-            right: selected ? 400 : 16,
-            display: "flex",
-            flexDirection: "column",
-            gap: 6,
-            alignItems: "flex-end",
-          }}
-        >
-          <button type="button" style={zoomBtn} title="Zoom in" onClick={() => zoomApi.current?.zoomBy(0.6)}>
-            +
-          </button>
-          <button type="button" style={zoomBtn} title="Zoom out" onClick={() => zoomApi.current?.zoomBy(1.6)}>
-            −
-          </button>
-          <button
-            type="button"
-            style={{ ...zoomBtn, width: "auto", padding: "0 12px", fontSize: 12 }}
-            title="Reset view"
-            onClick={() => zoomApi.current?.set(60)}
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            style={{ ...zoomBtn, width: "auto", padding: "0 12px", fontSize: 12 }}
-            title="Jump to the Kepler field"
-            onClick={goToKepler}
-          >
-            Kepler field
-          </button>
-        </div>
-      )}
-
-      <div
-        ref={tipRef}
-        style={{
-          display: "none",
-          position: "fixed",
-          zIndex: 30,
-          pointerEvents: "none",
-          padding: "6px 10px",
-          borderRadius: 8,
-          background: "#0b1020ee",
-          border: "1px solid #26335f",
-          color: "#e2e8f0",
-          fontSize: 13,
-        }}
+      <StarMapView
+        ref={mapRef}
+        planets={planets}
+        selected={selected}
+        mode={mode}
+        initialView={viewRef.current}
+        onSelect={setSelected}
+        onHover={handleHover}
       />
 
-      {galaxy ? (
-        <GalaxyView
-          planets={planets}
-          selected={selected}
-          texture={texture}
-          onSelect={setSelected}
-          onHover={handleHover}
-        />
-      ) : (
-        <Canvas
-          camera={{ position: [0, 0, 0.1], fov: 60, far: 1000 }}
-          raycaster={{ params: { Points: { threshold: 0.5 } } }}
-          onPointerMissed={() => setSelected(null)}
-        >
-          <Nebula />
-          <Stars radius={200} depth={60} count={4000} factor={5} fade />
-          {selected && <Halo planet={selected} texture={texture} />}
-          <Dots list={others} size={11} texture={texture} onSelect={setSelected} onHover={handleHover} />
-          <Dots list={habitable} size={16} texture={texture} onSelect={setSelected} onHover={handleHover} />
-          <FlyTo target={flyTarget} controlsRef={controlsRef} />
-          <Zoom api={zoomApi} controlsRef={controlsRef} />
-          <OrbitControls
-            ref={controlsRef}
-            enableZoom={false}
-            enablePan={false}
-            rotateSpeed={-0.35}
-            autoRotate={!selected}
-            autoRotateSpeed={0.3}
-          />
-        </Canvas>
-      )}
+      {/* top bar */}
+      <header className="sx-top">
+        <div className="sx-brand">
+          <Wordmark on width="118px" />
+          <span>Exoplanet Explorer</span>
+        </div>
+
+        <div className="sx-tools">
+          <label className="sx-search">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <circle cx="11" cy="11" r="6.5" />
+              <path d="M16 16l4.5 4.5" />
+            </svg>
+            <input type="text" placeholder="Search a planet or star" value={q} onChange={(e) => setQ(e.target.value)} />
+            {q && (
+              <button type="button" className="sx-clear" onClick={() => setQ("")} aria-label="Clear search">
+                ×
+              </button>
+            )}
+          </label>
+          <div className="sx-seg" role="group" aria-label="Filter">
+            <button type="button" className={!habitableOnly ? "is-on" : ""} onClick={() => setHabitableOnly(false)}>
+              All worlds
+            </button>
+            <button type="button" className={habitableOnly ? "is-on" : ""} onClick={() => setHabitableOnly(true)}>
+              <i className="sx-dot" style={{ background: colorFor("In habitable zone") }} /> Habitable zone
+            </button>
+          </div>
+          <span className="sx-count">{status}</span>
+        </div>
+
+        <div className="sx-right">
+          <div className="sx-seg" role="group" aria-label="View">
+            <button type="button" className={sky ? "is-on" : ""} onClick={() => setMode("sky")}>
+              Sky from Earth
+            </button>
+            <button type="button" className={!sky ? "is-on" : ""} onClick={() => setMode("map")}>
+              Galaxy map
+            </button>
+          </div>
+          <button type="button" className="sx-btn" onClick={() => setHabitability(true)}>
+            Habitability
+          </button>
+          <button type="button" className="sx-btn" onClick={() => setCompare({ a: selected ? selected.pl_name : null })}>
+            Compare worlds
+          </button>
+        </div>
+      </header>
+
+      {/* NASA data source + legend */}
+      <div className="sx-corner">
+      <DataBadge api={API} onRefreshed={() => setDataVersion((v) => v + 1)} />
+      <div className="sx-legend sx-glass">
+        {LEGEND.map(([k, label]) => (
+          <span key={k}>
+            <i className="sx-dot" style={{ background: colorFor(k) }} />
+            {label}
+          </span>
+        ))}
+        <div className="sx-note">
+          {sky
+            ? `Each light is a planet's star, where it sits in Earth's sky · ${hzCount.toLocaleString()} in the habitable zone`
+            : "Distances on a log scale · rings at 10 to 10,000 light-years · drag to orbit"}
+        </div>
+      </div>
+      </div>
+
+      {/* view controls */}
+      <div className="sx-zoom" style={{ right: selected ? 424 : 24 }}>
+        <button type="button" className="sx-icon" title="Zoom in" onClick={() => mapRef.current?.zoomBy(sky ? 0.6 : 0.7)}>
+          +
+        </button>
+        <button type="button" className="sx-icon" title="Zoom out" onClick={() => mapRef.current?.zoomBy(sky ? 1.6 : 1.4)}>
+          −
+        </button>
+        <button type="button" className="sx-icon sx-wide" title="Reset view" onClick={() => mapRef.current?.reset()}>
+          Reset
+        </button>
+        <button type="button" className="sx-icon sx-wide" title="Look at the Kepler field" onClick={goToKepler}>
+          Kepler field
+        </button>
+      </div>
+
+      <div ref={tipRef} className="sx-tip" />
 
       {selected && (
         <Panel
           planet={selected}
           siblings={siblings}
-          onPick={setSelected}
+          onPick={(p) => {
+            setSelected(p);
+          }}
           onClose={() => setSelected(null)}
-          onViewSystem={setSystemPlanet}
+          onViewSystem={viewSystem}
           onCompare={(p) => setCompare({ a: p.pl_name })}
         />
       )}
 
-      {compare && (
-        <CompareView api={API} initialA={compare.a} onClose={() => setCompare(null)} />
+      <Astro
+        api={API}
+        context={
+          selected
+            ? { kind: "planet", names: [selected.pl_name], label: selected.pl_name }
+            : { kind: "sky", names: [], label: "the whole catalogue" }
+        }
+        onShow={showPlanet}
+        inset={selected ? 408 : 0}
+      />
+
+      {habitability && (
+        <HabitabilityView
+          api={API}
+          onClose={() => setHabitability(false)}
+          onShow={(name) => {
+            setHabitability(false);
+            showPlanet(name);
+          }}
+        />
       )}
-    </>
+
+      {compare && <CompareView api={API} initialA={compare.a} onClose={() => setCompare(null)} />}
+      <div className="sx-dive" />
+    </div>
   );
+  }
 }

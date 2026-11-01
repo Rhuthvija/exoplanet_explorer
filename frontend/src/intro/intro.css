@@ -129,6 +129,7 @@
   transform: translate(-50%, 0);
   pointer-events: auto;
 }
+.solice-enter.is-on:active { transform: translate(-50%, 0) scale(0.98); }
 .solice-enter:hover {
   border-color: rgba(226, 234, 255, 0.85);
   background: rgba(255, 255, 255, 0.08);

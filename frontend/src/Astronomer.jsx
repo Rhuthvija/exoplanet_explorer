@@ -17,9 +17,9 @@ const pill = {
   padding: "4px 10px",
   fontSize: 11,
   borderRadius: 999,
-  border: "1px solid #26335f",
-  background: "#101733",
-  color: "#aab6dd",
+  border: "1px solid rgba(196,206,255,0.16)",
+  background: "rgba(255,255,255,0.04)",
+  color: "#959db8",
 };
 
 export default function Astronomer({ api, names, label }) {
@@ -120,7 +120,7 @@ export default function Astronomer({ api, names, label }) {
   const lastIndex = messages.length - 1;
 
   return (
-    <div style={{ marginTop: 14, borderTop: "1px solid #26335f", paddingTop: 14 }}>
+    <div className="sx-section" style={{ borderTop: "1px solid rgba(196,206,255,0.12)", paddingTop: 16 }}>
       <style>{css}</style>
 
       {/* header */}
@@ -130,7 +130,7 @@ export default function Astronomer({ api, names, label }) {
             width: 34,
             height: 34,
             borderRadius: "50%",
-            background: "linear-gradient(135deg, #6366f1, #22d3ee)",
+            background: "radial-gradient(circle at 35% 30%, #ffffff, #b9c2f0 45%, #4b5590 100%)",
             display: "grid",
             placeItems: "center",
             fontSize: 17,
@@ -141,7 +141,7 @@ export default function Astronomer({ api, names, label }) {
         </div>
         <div style={{ lineHeight: 1.25, flex: 1 }}>
           <div style={{ fontWeight: 700, fontSize: 14, color: "#fff" }}>Astro</div>
-          <div style={{ fontSize: 11, color: "#8d9ac7" }}>Virtual astronomer · answers from NASA data only</div>
+          <div style={{ fontSize: 11, color: "#959db8" }}>Virtual astronomer · answers from NASA data only</div>
         </div>
         {messages.length > 0 && (
           <button type="button" onClick={clear} style={{ ...pill, cursor: "pointer" }}>
@@ -187,7 +187,7 @@ export default function Astronomer({ api, names, label }) {
                 <span style={{ animation: "astro-blink 1s infinite", marginLeft: 2 }}>▍</span>
               )}
               {streaming && !m.content && (
-                <span style={{ color: "#8d9ac7", animation: "astro-blink 1.2s infinite" }}>Astro is thinking…</span>
+                <span style={{ color: "#959db8", animation: "astro-blink 1.2s infinite" }}>Astro is thinking…</span>
               )}
             </div>
           );
@@ -206,7 +206,7 @@ export default function Astronomer({ api, names, label }) {
               ...pill,
               padding: "6px 11px",
               fontSize: 12,
-              color: "#cbd5e1",
+              color: "#d6dbea",
               border: "1px solid #3b4a7a",
               cursor: busy ? "default" : "pointer",
               opacity: busy ? 0.5 : 1,
@@ -237,9 +237,9 @@ export default function Astronomer({ api, names, label }) {
             padding: "10px 14px",
             fontSize: 14,
             borderRadius: 999,
-            border: "1px solid #26335f",
-            background: "#0f1530",
-            color: "#e2e8f0",
+            border: "1px solid rgba(196,206,255,0.16)",
+            background: "rgba(255,255,255,0.04)",
+            color: "#e9ecf6",
             outline: "none",
           }}
         />
@@ -253,8 +253,8 @@ export default function Astronomer({ api, names, label }) {
             padding: 0,
             borderRadius: "50%",
             border: "none",
-            background: "linear-gradient(135deg, #6366f1, #4f46e5)",
-            color: "#fff",
+            background: "linear-gradient(180deg, #e3e7ff, #aeb8ee)",
+            color: "#0b0d1c",
             fontSize: 16,
             cursor: busy || !input.trim() ? "default" : "pointer",
             opacity: busy || !input.trim() ? 0.5 : 1,
@@ -276,9 +276,9 @@ function bubble(isUser, isError) {
     fontSize: 14,
     lineHeight: 1.5,
     whiteSpace: "pre-wrap",
-    color: isError ? "#fca5a5" : "#e2e8f0",
-    background: isUser ? "#3b4cca" : "#121a3a",
-    border: isUser ? "none" : `1px solid ${isError ? "#7f1d1d" : "#26335f"}`,
+    color: isError ? "#fca5a5" : "#e9ecf6",
+    background: isUser ? "rgba(182,168,255,0.24)" : "rgba(255,255,255,0.05)",
+    border: isUser ? "none" : `1px solid ${isError ? "#7f1d1d" : "rgba(196,206,255,0.16)"}`,
     borderRadius: isUser ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
     animation: "astro-pop 0.25s ease-out",
   };

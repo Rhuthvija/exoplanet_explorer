@@ -127,8 +127,8 @@ void main(){
   gl_Position = projectionMatrix * mv;
   if (uFixed > 0.5) gl_Position = gl_Position.xyww;  // sky-dome stars sit on the far plane
   float s = aSize;
-  if (uFixed < 0.5) s = aSize * clamp(140.0 / -mv.z, 0.35, 4.0);
-  float tw = 1.0 + 0.04 * sin(uTime * (0.25 + aSeed * 0.35) + aSeed * 40.0);   // barely-there, slow shimmer
+  if (uFixed < 0.5) s = aSize * clamp(140.0 / -mv.z, 0.35, 1.4);   // nearby stars never balloon into blurry blobs
+  float tw = 1.0;   // steady stars, no twinkle
   vSize = s * uPR;
   // A star is never drawn smaller than 2.4 px: anything smaller flickers as it slides across pixels.
   // Small stars are dimmed by their area instead, so they still look small.
@@ -182,14 +182,16 @@ float fbm2(vec2 p){ float s = 0.0, a = 0.5; for (int i = 0; i < 5; i++){ s += a 
 float starLayer(vec2 p, float cell, float fp, float dens, float seed){
   vec2 g = p / cell; vec2 id = floor(g); vec2 f = fract(g) - 0.5;
   float h = hash21(id + seed);
+  // stars fade in and out gently as the arms sweep past, instead of switching on/off (that read as twinkling)
   float prob = clamp(0.03 + dens * 0.22, 0.0, 0.45);
-  if (h > prob) return 0.0;
+  float pres = 1.0 - smoothstep(prob - 0.12, prob + 0.02, h);
+  if (pres <= 0.0) return 0.0;
   vec2 off = (vec2(hash21(id + seed + 7.7), hash21(id + seed + 3.1)) - 0.5) * 0.6;
   float d = length(f - off);
   float px = cell / max(fp, 1e-6);
   float lod = smoothstep(1.5, 6.0, px) * (1.0 - smoothstep(30.0, 140.0, px));
   float b = pow(hash21(id + seed + 11.3), 2.0) * 0.9 + 0.1;
-  return (1.0 - smoothstep(0.0, 0.30, d)) * b * lod;
+  return (1.0 - smoothstep(0.0, 0.30, d)) * b * lod * pres;
 }
 void main(){
   vec2 p = vP;
@@ -198,13 +200,13 @@ void main(){
   float th = atan(p.y, p.x);
   float w = fbm2(p * 0.12 + 3.0);
   float ph = ${ARMS}.0 * (th - r * ${SPIN} - uTime * omega(r)) + (w - 0.5) * 2.2;
-  float arms = pow(0.5 + 0.5 * cos(ph), 2.6);
+  float arms = pow(max(0.5 + 0.5 * cos(ph), 0.0), 2.6);
   float disc = exp(-r / 15.0);
   float outer = (1.0 - smoothstep(22.0, 46.0, r));
   float bulge = exp(-r * r / 22.0) * 1.6 + exp(-r / 3.2) * 0.9;
   float lumps = fbm2(p * 0.5 + vec2(uTime * 0.01, 0.0));
   float dens = (arms * (0.35 + 0.9 * lumps) * disc * 2.2 + disc * 0.25) * outer;
-  float lane = pow(0.5 + 0.5 * cos(ph - 0.9), 5.0) * smoothstep(3.0, 9.0, r) * (0.5 + fbm2(p * 0.9));
+  float lane = pow(max(0.5 + 0.5 * cos(ph - 0.9), 0.0), 5.0) * smoothstep(3.0, 9.0, r) * (0.5 + fbm2(p * 0.9));
   dens *= 1.0 - 0.75 * clamp(lane, 0.0, 1.0);
 
   vec3 warm = vec3(1.0, 0.80, 0.52);
@@ -247,9 +249,9 @@ void main(){
   vec4 mv = modelViewMatrix * vec4(p, 1.0);
   gl_Position = projectionMatrix * mv;
   float ps = aSB.x * uScale / max(-mv.z, 0.01);
-  gl_PointSize = clamp(ps, 2.6, uMaxSize);
-  float k = clamp(ps / 2.6, 0.0, 1.0);
-  vColor = aColor * aSB.y * max(k * k, 0.08);   // tiny particles fade by area instead of flickering
+  gl_PointSize = clamp(ps, 3.2, uMaxSize);
+  float k = clamp(ps / 3.2, 0.0, 1.0);
+  vColor = aColor * aSB.y * k * k * k;   // particles only show once the galaxy is close; far away the smooth disc does the work
 }
 `;
 
@@ -261,7 +263,7 @@ void main(){
   float d = length(gl_PointCoord - 0.5);
   float a = 1.0 - smoothstep(0.0, 0.5, d);
   a *= a;
-  gl_FragColor = vec4(min(toLin(vColor) * uFade * a * 0.8, vec3(2.0)), 1.0);
+  gl_FragColor = vec4(min(toLin(vColor) * uFade * a * 0.5, vec3(1.0)), 1.0);
 }
 `;
 
@@ -426,7 +428,7 @@ void main(){
   vec3 V = normalize(cameraPosition - vPosW);
   float ndl = dot(N, L);
   float dif = smoothstep(-0.12, 1.0, ndl);
-  float fres = pow(1.0 - max(dot(N, V), 0.0), 3.0);
+  float fres = pow(max(1.0 - max(dot(N, V), 0.0), 0.0), 3.0);
   float day = smoothstep(-0.2, 0.4, ndl);
   vec3 lin = toLin(col) * (0.004 + 1.25 * dif) + toLin(uAtmo) * fres * uAtmoK * day * 0.8;
   lin += toLin(vec3(0.72, 0.66, 1.0)) * fres * 0.06;   // faint lavender rim, so night sides still read against space
@@ -466,8 +468,8 @@ void main(){
   lin += vec3(1.0, 0.66, 0.34) * cities * night * (1.0 - cl * 0.9) * 0.22;
 
   float mu = max(dot(N, V), 0.0);
-  float limb = pow(1.0 - mu, 2.2);
-  float term = exp(-pow(ndl * 4.0, 2.0));
+  float limb = pow(max(1.0 - mu, 0.0), 2.2);
+  float term = exp(-(ndl * 4.0) * (ndl * 4.0));
   vec3 sky = mix(vec3(0.30, 0.55, 1.0), vec3(1.0, 0.55, 0.30), term * 0.6);
   lin += toLin(sky) * limb * smoothstep(-0.25, 0.45, ndl) * 0.4;
   gl_FragColor = vec4(lin, 1.0);
@@ -504,7 +506,7 @@ void main(){
   vec3 up = (closest - vCenter) / max(length(closest - vCenter), 1e-5);
   vec3 L = normalize(-vCenter);
   float day = smoothstep(-0.35, 0.45, dot(up, L));
-  float sunset = exp(-pow(dot(up, L) * 3.5, 2.0));
+  float sunset = exp(-(dot(up, L) * 3.5) * (dot(up, L) * 3.5));
   vec3 col = mix(toLin(uColor), toLin(vec3(1.0, 0.6, 0.35)), sunset * 0.45);
   gl_FragColor = vec4(col * glow * day * uK, 1.0);
 }
@@ -536,7 +538,7 @@ void main(){
   vec3 col = mix(vec3(1.0, 0.45, 0.12), vec3(1.0, 0.80, 0.45), n);
   col = mix(col, vec3(1.0, 0.95, 0.80), gran * gran * 0.35);
   float mu = max(dot(normalize(vN), normalize(vV)), 0.0);
-  col *= 0.55 + 0.6 * pow(mu, 0.5);                 // limb darkening
+  col *= 0.55 + 0.6 * sqrt(max(mu, 0.0));                 // limb darkening
   gl_FragColor = vec4(toLin(col) * 6.0, 1.0);       // HDR: this is what blooms
 }
 `;
@@ -617,7 +619,7 @@ varying float vFade;
 vec3 toLin(vec3 c){ return pow(max(c, 0.0), vec3(2.2)); }
 void main(){
   float across = 1.0 - vSide * vSide;
-  float a = across * across * mix(1.0, pow(vAlong, 1.4), uShape) * vFade * uIntensity;
+  float a = across * across * mix(1.0, pow(clamp(vAlong, 0.0, 1.0) + 1e-4, 1.4), uShape) * vFade * uIntensity;
   gl_FragColor = vec4(min(toLin(vCol) * a * 1.15, vec3(4.0)), 1.0);
 }
 `;
@@ -682,7 +684,7 @@ export const SANITIZE_SHADER = {
     uniform sampler2D tDiffuse;
     varying vec2 vUv;
     float fix1(float v){
-      bool bad = !(v == v) || v > 1.0e4 || v < -1.0e4;   // NaN or infinity
+      bool bad = isnan(v) || isinf(v) || !(v == v) || v > 1.0e4 || v < -1.0e4;   // NaN or infinity
       return bad ? 0.0 : clamp(v, 0.0, 40.0);
     }
     void main(){

@@ -1,6 +1,7 @@
 import * as THREE from "three";
 
-export const API = "http://127.0.0.1:8000";
+// backend address: set VITE_API_URL in frontend/.env when you deploy
+export const API = (import.meta.env && import.meta.env.VITE_API_URL) || "http://127.0.0.1:8000";
 const R = 50;
 
 export function toXYZ(raDeg, decDeg) {
@@ -13,12 +14,17 @@ export function toXYZ(raDeg, decDeg) {
   ];
 }
 
+// status colours, shared by the 3D views and the panels
 export function colorFor(hz) {
-  if (hz === "In habitable zone") return "#4ade80";
-  if (hz === "Too hot") return "#fb923c";
-  if (hz === "Too cold") return "#60a5fa";
-  return "#cbd5e1";
+  if (hz === "In habitable zone") return "#8af0c4";
+  if (hz === "Too hot") return "#f2b394";
+  if (hz === "Too cold") return "#9cc2ff";
+  return "#b4bbcf";
 }
+
+export const LY_PER_PC = 3.2616;
+export const fmtLy = (pc) => (pc == null ? "unknown" : `${Math.round(pc * LY_PER_PC).toLocaleString()} light-years`);
+export const fmtNum = (v, digits = 3) => (v == null ? "n/a" : v >= 1000 ? Math.round(v).toLocaleString() : Number(v.toPrecision(digits)).toString());
 
 export function planetLabel(p) {
   if (p.hostname && p.pl_name.startsWith(p.hostname)) {

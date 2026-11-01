@@ -56,7 +56,7 @@ const ARMS = 4;
 const SPIN = 0.22;
 const GALAXY_R = 40;
 const SUN_R = 26;
-const OMEGA0 = 0.18;
+const OMEGA0 = 0.05; // slow, majestic spin (fast spin made the particles shimmer)
 const omega = (r) => OMEGA0 / (1 + r * 0.1);
 const glslF = (x) => x.toFixed(3);
 
@@ -480,11 +480,11 @@ export class IntroEngine {
     sc.background = this.bakeSky(0, 0.55);
     sc.backgroundIntensity = 1;
     this.cosmosSparkle = this.makeStars({ n: 45, seed: 31, radius: 9, sizes: [5, 9], spike: 1, warmth: 0.1, bright: 0.9 });
-    sc.add(this.cosmosSparkle);
+    // (big soft sparkle stars removed: they read as blurry blobs)
     this.cosmosFarStars = this.makeStars({ n: 2500, seed: 3, radius: 9, sizes: [0.5, 1.6] });
     sc.add(this.cosmosFarStars);
     this.cosmosNearStars = this.makeStars({ n: 1400, seed: 5, volume: true, radius: 700, inner: 60, sizes: [0.6, 2.4], fixed: false });
-    sc.add(this.cosmosNearStars);
+    // (nearby 3D stars removed: up close they looked like blurry blobs)
 
     // distant galaxies, each a tilted disc so it reads as 3D while the camera moves
     const texes = [
@@ -533,7 +533,7 @@ export class IntroEngine {
       m.rotation.set(...g.rot);
       this.galaxies.add(m);
     });
-    sc.add(this.galaxies);
+    // (the swirly background galaxies were removed: they looked cartoonish)
 
     // the Milky Way: shader disc + particles, in a tilted group
     const mw = new THREE.Group();
@@ -597,7 +597,7 @@ export class IntroEngine {
     gg.setAttribute("aSB", new THREE.BufferAttribute(sb, 2));
     gg.setAttribute("aSeed", new THREE.BufferAttribute(seed, 1));
     this.galaxyMat = new THREE.ShaderMaterial({
-      uniforms: { uTime: { value: 0 }, uScale: { value: 1400 }, uMaxSize: { value: 8 }, uFade: { value: 1 } },
+      uniforms: { uTime: { value: 0 }, uScale: { value: 1400 }, uMaxSize: { value: 4 }, uFade: { value: 1 } },
       vertexShader: S.galaxyVert(glslF(OMEGA0)),
       fragmentShader: S.GALAXY_FRAG,
       transparent: true,
@@ -633,11 +633,11 @@ export class IntroEngine {
     sc.background = this.bakeSky(1, 0.75);
     sc.backgroundIntensity = 0;
     this.localSparkle = this.makeStars({ n: 70, seed: 37, radius: 9, sizes: [5, 10], spike: 1, warmth: 0.15, bright: 0.9 });
-    sc.add(this.localSparkle);
+    // (big soft sparkle stars removed: they read as blurry blobs)
     this.localFarStars = this.makeStars({ n: 6000, seed: 9, radius: 9, sizes: [0.5, 1.8], warmth: 0.6, bright: 0.85 });
     sc.add(this.localFarStars);
     this.localNearStars = this.makeStars({ n: 1500, seed: 13, volume: true, radius: 900, inner: 120, sizes: [0.6, 2.6], fixed: false });
-    sc.add(this.localNearStars);
+    // (nearby 3D stars removed: up close they looked like blurry blobs)
 
     // Sun
     this.sunMat = new THREE.ShaderMaterial({ uniforms: { uTime: { value: 0 } }, vertexShader: S.SUN_VERT, fragmentShader: S.SUN_FRAG });
@@ -840,6 +840,7 @@ export class IntroEngine {
       blending: THREE.AdditiveBlending,
     });
     const streaks = new THREE.Mesh(quad, this.streakMat);
+    this.streaks = streaks;
     streaks.frustumCulled = false;
     this.fx.add(streaks);
 
@@ -925,6 +926,7 @@ export class IntroEngine {
     su.uStretch.value = 0.2 * speed; // a streak is how far a star moves while the "shutter" is open
     su.uShape.value = smooth(0.05, 0.4, warp);
     su.uIntensity.value = smooth(0.0, 0.3, warp);
+    this.streaks.visible = su.uIntensity.value > 0.002; // the warp layer isn't drawn at all when we're not warping
     this.glowMat.uniforms.uGlow.value = Math.pow(warp, 3) * 0.18; // only a faint haze at the very peak
     this.glowMat.uniforms.uFlash.value = 0;
     let fov = 50 + 22 * warp;
