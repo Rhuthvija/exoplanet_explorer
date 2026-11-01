@@ -1,8 +1,22 @@
+# dependencies and builds
 node_modules/
 dist/
-.env
+dist-ssr/
 venv/
 .venv/
 __pycache__/
 *.pyc
+
+# secrets: API keys live only in .env
+.env
+*.local
+
+# editor / OS
 .DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.log
+
+# old nested copy of the project (not part of this repo)
+exoplanet_explorer/
