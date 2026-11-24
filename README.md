@@ -7,7 +7,7 @@
 An AI-powered 3D explorer for every confirmed exoplanet, built on live data from NASA's Exoplanet Archive,<br/>
 with **Astro**, a virtual astronomer that explains them using only real data.
 
-**[LIVE](https://exoplanet-explorer-six.vercel.app/)**
+**[LIVE](https://exoplanet-explorer-six.vercel.app/)** ·
  **[🎥 Watch the demo](https://drive.google.com/file/d/1GizD4khv7UuYTV6QtFAFuciFpTSeOY8f/view?usp=sharing)** ·
 **[Hackathon submission](https://github.com/cbitosc/HFT26-TEAM-64/pull/1)**
 
